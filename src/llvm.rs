@@ -1,10 +1,25 @@
+use std::slice;
+use std::str;
 use std::{ffi::CStr, marker::PhantomData, ptr::null_mut};
 
+use llvm_sys::core::LLVMDumpValue;
+use llvm_sys::core::LLVMGetCalledValue;
+use llvm_sys::core::LLVMGetDebugLocFilename;
+use llvm_sys::core::LLVMGetDebugLocLine;
+use llvm_sys::core::LLVMGetFirstBasicBlock;
+use llvm_sys::core::LLVMGetFirstInstruction;
+use llvm_sys::core::LLVMGetInstructionOpcode;
+use llvm_sys::core::LLVMGetNextBasicBlock;
+use llvm_sys::core::LLVMGetNextInstruction;
+use llvm_sys::core::LLVMIsAFunction;
+use llvm_sys::prelude::LLVMBasicBlockRef;
+use llvm_sys::LLVMOpcode;
 use llvm_sys::{
     bit_reader::LLVMParseBitcodeInContext2,
     core::{
         LLVMContextCreate, LLVMContextDispose, LLVMCreateMemoryBufferWithContentsOfFile,
         LLVMDisposeMemoryBuffer, LLVMDisposeModule, LLVMGetFirstFunction, LLVMGetNextFunction,
+        LLVMGetValueName2,
     },
     prelude::{LLVMContextRef, LLVMMemoryBufferRef, LLVMModuleRef, LLVMValueRef},
 };
@@ -37,9 +52,9 @@ impl Module {
     }
 
     pub fn fns(&self) -> FunctionIterator {
-        let fun = unsafe { LLVMGetFirstFunction(self.module) };
+        let ctx = unsafe { LLVMGetFirstFunction(self.module) };
         FunctionIterator {
-            fun,
+            ctx,
             _p: PhantomData,
         }
     }
@@ -81,26 +96,203 @@ fn c_str(s: &str) -> SmallString<[u8; 128]> {
     r
 }
 
+unsafe fn from_c_str<'x, S: Into<u32>>(ptr: *const i8, size: S) -> &'x str {
+    let size = size.into() as usize;
+    let name = unsafe { slice::from_raw_parts(ptr.cast(), size) };
+    str::from_utf8(name).unwrap()
+}
+
 pub struct FunctionIterator<'x> {
-    fun: LLVMValueRef,
+    ctx: LLVMValueRef,
     _p: PhantomData<&'x ()>,
 }
 impl<'x> FunctionIterator<'x> {
     pub fn next(&mut self) -> Option<Function<'x>> {
-        let current = self.fun;
+        let current = self.ctx;
         if current.is_null() {
             return None;
         }
-        self.fun = unsafe { LLVMGetNextFunction(self.fun) };
+        self.ctx = unsafe { LLVMGetNextFunction(self.ctx) };
 
         Some(Function {
-            fun: current,
+            ctx: current,
             _p: PhantomData,
         })
     }
 }
 
+#[derive(Ord, PartialOrd, Eq, PartialEq)]
 pub struct Function<'x> {
-    fun: LLVMValueRef,
+    ctx: LLVMValueRef,
     _p: PhantomData<&'x ()>,
+}
+
+impl<'x> Function<'x> {
+    pub fn name(&self) -> &str {
+        let name = unsafe {
+            let mut size = 0;
+            let name = LLVMGetValueName2(self.ctx, &mut size);
+            slice::from_raw_parts(name.cast(), size)
+        };
+        str::from_utf8(name).unwrap()
+    }
+
+    pub fn bbs(&self) -> BasicBlockIterator {
+        let bb = unsafe { LLVMGetFirstBasicBlock(self.ctx) };
+        BasicBlockIterator {
+            ctx: bb,
+            _p: PhantomData,
+        }
+    }
+
+    pub fn as_value(&self) -> Value {
+        Value::Function(Function {
+            ctx: self.ctx,
+            _p: PhantomData,
+        })
+    }
+}
+
+pub struct BasicBlockIterator<'x> {
+    ctx: LLVMBasicBlockRef,
+    _p: PhantomData<&'x ()>,
+}
+impl<'x> BasicBlockIterator<'x> {
+    pub fn next(&mut self) -> Option<BasicBlock<'x>> {
+        let current = self.ctx;
+        if current.is_null() {
+            return None;
+        }
+        self.ctx = unsafe { LLVMGetNextBasicBlock(self.ctx) };
+
+        Some(BasicBlock {
+            ctx: current,
+            _p: PhantomData,
+        })
+    }
+}
+pub struct BasicBlock<'x> {
+    ctx: LLVMBasicBlockRef,
+    _p: PhantomData<&'x ()>,
+}
+impl<'x> BasicBlock<'x> {
+    pub fn instrs(&self) -> InstrIterator<'x> {
+        let instr = unsafe { LLVMGetFirstInstruction(self.ctx) };
+        InstrIterator {
+            ctx: instr,
+            _p: PhantomData,
+        }
+    }
+}
+
+pub struct InstrIterator<'x> {
+    ctx: LLVMValueRef,
+    _p: PhantomData<&'x ()>,
+}
+impl<'x> InstrIterator<'x> {
+    pub fn next(&mut self) -> Option<Instr<'x>> {
+        let current = self.ctx;
+        if current.is_null() {
+            return None;
+        }
+        self.ctx = unsafe { LLVMGetNextInstruction(self.ctx) };
+
+        Some(unsafe { Instr::new(current) })
+    }
+}
+
+pub struct CallInstr<'x> {
+    ctx: LLVMValueRef,
+    _p: PhantomData<&'x ()>,
+}
+impl<'x> CallInstr<'x> {
+    pub fn called_fn(&self) -> Value {
+        unsafe {
+            let called_fn = LLVMGetCalledValue(self.ctx);
+            Value::new(called_fn)
+        }
+    }
+}
+
+pub enum Instr<'x> {
+    Call(CallInstr<'x>),
+    Other(LLVMValueRef),
+}
+impl<'x> Instr<'x> {
+    unsafe fn new(instr: LLVMValueRef) -> Instr<'x> {
+        use Instr::*;
+
+        let opcode = LLVMGetInstructionOpcode(instr);
+        match opcode {
+            LLVMOpcode::LLVMCall => Call(CallInstr {
+                ctx: instr,
+                _p: PhantomData,
+            }),
+            _ => Other(instr),
+        }
+    }
+    fn value_raw(&self) -> LLVMValueRef {
+        match self {
+            Instr::Call(x) => x.ctx,
+            Instr::Other(x) => *x,
+        }
+    }
+    pub fn as_value(&self) -> Value {
+        Value::Other(self.value_raw())
+    }
+    pub fn dump(&self) {
+        let ctx = match self {
+            Instr::Call(x) => x.ctx,
+            Instr::Other(x) => *x,
+        };
+        unsafe { LLVMDumpValue(ctx) };
+        println!();
+    }
+}
+
+pub enum Value<'x> {
+    Function(Function<'x>),
+    Other(LLVMValueRef),
+}
+impl<'x> Value<'x> {
+    unsafe fn new(value: LLVMValueRef) -> Value<'x> {
+        if !LLVMIsAFunction(value).is_null() {
+            Value::Function(Function {
+                ctx: value,
+                _p: PhantomData,
+            })
+        } else {
+            Value::Other(value)
+        }
+    }
+
+    fn value_raw(&self) -> LLVMValueRef {
+        match self {
+            Value::Function(x) => x.ctx,
+            Value::Other(x) => *x,
+        }
+    }
+
+    pub fn debug_info(&self) -> Option<DebugInfo> {
+        unsafe {
+            let raw_value = self.value_raw();
+
+            let mut size = 0;
+            let name = LLVMGetDebugLocFilename(raw_value, &mut size);
+            let filename = from_c_str(name, size);
+
+            let line = LLVMGetDebugLocLine(raw_value);
+
+            if filename.is_empty() && line == 0 {
+                None
+            } else {
+                Some(DebugInfo { filename, line })
+            }
+        }
+    }
+}
+
+pub struct DebugInfo<'x> {
+    pub filename: &'x str,
+    pub line: u32,
 }

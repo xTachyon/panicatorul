@@ -2,7 +2,6 @@ use std::slice;
 use std::str;
 use std::{ffi::CStr, marker::PhantomData, ptr::null_mut};
 
-use llvm_sys::core::LLVMDumpValue;
 use llvm_sys::core::LLVMGetCalledValue;
 use llvm_sys::core::LLVMGetDebugLocFilename;
 use llvm_sys::core::LLVMGetDebugLocLine;
@@ -146,12 +145,12 @@ impl<'x> Function<'x> {
         }
     }
 
-    pub fn as_value(&self) -> Value {
-        Value::Function(Function {
-            ctx: self.ctx,
-            _p: PhantomData,
-        })
-    }
+    // pub fn as_value(&self) -> Value {
+    //     Value::Function(Function {
+    //         ctx: self.ctx,
+    //         _p: PhantomData,
+    //     })
+    // }
 }
 
 pub struct BasicBlockIterator<'x> {
@@ -243,14 +242,14 @@ impl<'x> Instr<'x> {
     pub fn as_value(self) -> Value<'x> {
         Value::Other(self.value_raw())
     }
-    pub fn dump(&self) {
-        let ctx = match self {
-            Instr::Call(x) => x.ctx,
-            Instr::Other(x) => *x,
-        };
-        unsafe { LLVMDumpValue(ctx) };
-        println!();
-    }
+    // pub fn dump(&self) {
+    //     let ctx = match self {
+    //         Instr::Call(x) => x.ctx,
+    //         Instr::Other(x) => *x,
+    //     };
+    //     unsafe { LLVMDumpValue(ctx) };
+    //     println!();
+    // }
 }
 
 pub enum Value<'x> {

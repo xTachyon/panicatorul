@@ -1,9 +1,10 @@
 mod llvm;
+mod html_gen;
 
-use crate::llvm::DebugInfo;
 use clap::Parser;
 use llvm::{Function, Instr, Module, Value};
 use std::fmt::Write;
+use std::fs;
 use std::path::Path;
 use std::{collections::HashMap, process::Command, time::Instant};
 
@@ -24,7 +25,7 @@ fn find_panic_fns(module: &Module) -> Vec<Function> {
     result
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum LineStatus {
     NotInBinary,
     NoPanic,
@@ -38,7 +39,6 @@ struct DataFile {
 struct Data<'x> {
     files: HashMap<&'x str, DataFile>,
     no_of_panicky_fns: usize,
-    unknown_panics: usize,
     panic_fns: Vec<Function<'x>>,
 }
 
@@ -159,6 +159,11 @@ fn do_init(args: &Args) {
 fn main() {
     let time_total = Instant::now();
 
+    let version = llvm::get_version();
+    if version.major != 17 {
+        panic!("LLVM version 17 is required");
+    }
+
     let args = Args::parse();
     if args.init {
         do_init(&args);
@@ -167,11 +172,6 @@ fn main() {
     let expected_path = format!("target/release/deps/{}.bc", args.package);
     if !Path::new(&expected_path).exists() {
         panic!("{} does not exist", expected_path);
-    }
-
-    let version = llvm::get_version();
-    if version.major != 17 {
-        panic!("LLVM version 17 is required");
     }
 
     let time = time_total;
@@ -184,7 +184,6 @@ fn main() {
     let data = &mut Data {
         files: HashMap::new(),
         no_of_panicky_fns: 0,
-        unknown_panics: 0,
         panic_fns,
     };
     let mut fns = module.fns();
@@ -192,9 +191,14 @@ fn main() {
         do_fn(data, fun);
     }
 
-    for i in data.files.keys() {
-        println!("{}", i);
-    }
+    // for i in data.files.keys() {
+    //     println!("{}", i);
+    // }
+
+    let output_folder = "target/panicatorul";
+    fs::create_dir_all(output_folder).unwrap();
+    html_gen::gen(output_folder, &data.files);
+
     println!("no of files: {}", data.files.len());
     println!("no of panicky fns: {}", data.no_of_panicky_fns);
     println!("total time: {:?}", time_total.elapsed());

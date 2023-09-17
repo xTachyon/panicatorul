@@ -11,6 +11,7 @@ use llvm_sys::core::LLVMGetFirstInstruction;
 use llvm_sys::core::LLVMGetInstructionOpcode;
 use llvm_sys::core::LLVMGetNextBasicBlock;
 use llvm_sys::core::LLVMGetNextInstruction;
+use llvm_sys::core::LLVMGetVersion;
 use llvm_sys::core::LLVMIsAFunction;
 use llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_sys::LLVMOpcode;
@@ -137,7 +138,7 @@ impl<'x> Function<'x> {
         str::from_utf8(name).unwrap()
     }
 
-    pub fn bbs(&self) -> BasicBlockIterator {
+    pub fn bbs(self) -> BasicBlockIterator<'x> {
         let bb = unsafe { LLVMGetFirstBasicBlock(self.ctx) };
         BasicBlockIterator {
             ctx: bb,
@@ -201,6 +202,7 @@ impl<'x> InstrIterator<'x> {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct CallInstr<'x> {
     ctx: LLVMValueRef,
     _p: PhantomData<&'x ()>,
@@ -214,6 +216,7 @@ impl<'x> CallInstr<'x> {
     }
 }
 
+#[derive(Copy, Clone)]
 pub enum Instr<'x> {
     Call(CallInstr<'x>),
     Other(LLVMValueRef),
@@ -237,7 +240,7 @@ impl<'x> Instr<'x> {
             Instr::Other(x) => *x,
         }
     }
-    pub fn as_value(&self) -> Value {
+    pub fn as_value(self) -> Value<'x> {
         Value::Other(self.value_raw())
     }
     pub fn dump(&self) {
@@ -273,7 +276,7 @@ impl<'x> Value<'x> {
         }
     }
 
-    pub fn debug_info(&self) -> Option<DebugInfo> {
+    pub fn debug_info(self) -> Option<DebugInfo<'x>> {
         unsafe {
             let raw_value = self.value_raw();
 
@@ -295,4 +298,23 @@ impl<'x> Value<'x> {
 pub struct DebugInfo<'x> {
     pub filename: &'x str,
     pub line: u32,
+}
+
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+pub fn get_version() -> Version {
+    let mut major = 0;
+    let mut minor = 0;
+    let mut patch = 0;
+    unsafe {
+        LLVMGetVersion(&mut major, &mut minor, &mut patch);
+    }
+    Version {
+        major,
+        minor,
+        patch,
+    }
 }

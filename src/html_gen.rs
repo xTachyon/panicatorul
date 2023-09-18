@@ -35,6 +35,21 @@ fn gen_line(writer: &mut String, index: usize, line: &str, status: LineStatus) {
 }
 
 fn gen_file(writer: &mut String, input_file: &str, lines_status: &[LineStatus]) {
+    let no_of_panic_lines = lines_status
+        .iter()
+        .filter(|&&x| x == LineStatus::Panic)
+        .count();
+    let clean_lines = lines_status.len() - no_of_panic_lines;
+    let percent = clean_lines as f32 / lines_status.len() as f32 * 100.0;
+    let no_of_lines = lines_status.len();
+    let line_background = if percent >= 80.0 {
+        "has-text-success"
+    } else if percent >= 50.0 {
+        "has-text-warning"
+    } else {
+        "has-text-danger"
+    };
+
     write!(
         writer,
         r#"
@@ -44,14 +59,23 @@ fn gen_file(writer: &mut String, input_file: &str, lines_status: &[LineStatus]) 
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{}</title>
+    <title>{input_file}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.1/css/bulma.min.css">
 </head>
 
 <body>
     <div class="container">
+    <nav class="level">
+        <div class="level-item has-text-centered">
+            <div>
+                <p class="heading">Lines</p>
+                <p class="title {line_background}">
+                    {percent:.2}% ({clean_lines} / {no_of_lines})
+                </p>
+            </div>
+        </div>
+    </nav>
         "#,
-        input_file
     )
     .unwrap();
 

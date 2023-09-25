@@ -1,29 +1,15 @@
-mod llvm;
 mod html_gen;
+mod llvm;
 
 use clap::Parser;
-use llvm::{Function, Instr, Module, Value};
+use llvm::{FileLine, Function, Instr, Module, Value};
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
 use std::{collections::HashMap, process::Command, time::Instant};
 
 // type SmallString1024 = SmallString<[u8; 1024]>;
-
-fn find_panic_fns(module: &Module) -> Vec<Function> {
-    let mut result = Vec::new();
-
-    let mut fns = module.fns();
-    while let Some(fun) = fns.next() {
-        if !fun.name().starts_with("_ZN4core9panicking") {
-            continue;
-        }
-        result.push(fun);
-    }
-
-    result.sort();
-    result
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum LineStatus {
@@ -38,25 +24,58 @@ struct DataFile {
 }
 struct Data<'x> {
     files: HashMap<&'x str, DataFile>,
+    fns: HashMap<Function<'x>, bool>,
     no_of_panicky_fns: usize,
-    panic_fns: Vec<Function<'x>>,
+    in_processing: HashSet<Function<'x>>,
 }
 
-fn is_panicky(panic_fns: &[Function], instr: Instr) -> bool {
+fn fn_is_panicky_impl<'x>(data: &mut Data<'x>, fun: Function<'x>) -> bool {
+    if fun.name().starts_with("_ZN4core9panicking") {
+        return true;
+    }
+
+    let mut result = false;
+    let mut bbs = fun.bbs();
+    while let Some(bb) = bbs.next() {
+        let mut instrs = bb.instrs();
+        while let Some(instr) = instrs.next() {
+            result = do_instr(data, instr) || result;
+        }
+    }
+
+    result
+}
+fn fn_is_panicky_pika<'x>(data: &mut Data<'x>, fun: Function<'x>) -> bool {
+    match data.fns.get(&fun) {
+        Some(&x) => x,
+        None => {
+            let ret = fn_is_panicky_impl(data, fun);
+            data.fns.insert(fun, ret);
+            ret
+        }
+    }
+}
+fn fn_is_panicky<'x>(data: &mut Data<'x>, fun: Function<'x>) -> bool {
+    match data.in_processing.get(&fun) {
+        Some(_) => return false,
+        None => {}
+    }
+    data.in_processing.insert(fun);
+    let ret = fn_is_panicky_pika(data, fun);
+    data.in_processing.remove(&fun);
+
+    ret
+}
+fn is_panicky<'x>(data: &mut Data<'x>, instr: Instr<'x>) -> bool {
     match instr {
         Instr::Call(instr) => match instr.called_fn() {
-            Value::Function(fun) => panic_fns.binary_search(&fun).is_ok(),
+            Value::Function(fun) => fn_is_panicky(data, fun),
             _ => false,
         },
         _ => false,
     }
 }
-fn do_instr<'x>(data: &mut Data<'x>, instr: Instr<'x>) {
-    let value = instr.as_value();
-    let Some(debug_info) = value.debug_info() else {
-        return;
-    };
-
+fn set_panic_line<'x>(data: &mut Data<'x>, debug_info: FileLine<'x>, is_panicky: bool) {
     let lines = &mut data
         .files
         .entry(debug_info.filename)
@@ -73,31 +92,29 @@ fn do_instr<'x>(data: &mut Data<'x>, instr: Instr<'x>) {
         return;
     }
 
-    let is_panicky = is_panicky(&data.panic_fns, instr);
     *the_line = if is_panicky {
         LineStatus::Panic
     } else {
         LineStatus::NoPanic
     };
 }
+fn do_instr<'x>(data: &mut Data<'x>, instr: Instr<'x>) -> bool {
+    let value = instr.as_value();
+    let is_panicky = is_panicky(data, instr);
 
-fn do_fn<'x>(data: &mut Data<'x>, original_fun: Function<'x>) {
-    let mut bbs = original_fun.bbs();
-    while let Some(bb) = bbs.next() {
-        let mut instrs = bb.instrs();
-        while let Some(instr) = instrs.next() {
-            do_instr(data, instr);
-        }
+    let Some(debug_info) = value.debug_info() else {
+        return is_panicky;
+    };
+    if let Some(info) = debug_info.direct {
+        set_panic_line(data, info, is_panicky);
     }
+    if let Some(info) = debug_info.inlined_at {
+        set_panic_line(data, info, is_panicky);
+    }
+
+    is_panicky
 }
 
-fn print_panic_fns(panic_fns: &[Function]) {
-    println!("panic fns: ");
-    for i in panic_fns {
-        println!("{}", i.name());
-    }
-    println!();
-}
 #[derive(Parser)]
 #[command(author, version, about, long_about=None)]
 struct Args {
@@ -129,7 +146,7 @@ fn run_command(args: &[&str]) {
         .unwrap();
 }
 fn do_init(args: &Args) {
-    let version = "nightly-2023-08-17";
+    let version = "nightly-2023-09-17";
     run_command(&["rustup", "install", version]);
 
     run_command(&[
@@ -146,7 +163,7 @@ fn do_init(args: &Args) {
         &args.profile,
         //
         "-Z",
-        "build-std=std,core",
+        "build-std=std,core,panic_abort",
         "--target",
         &args.target,
         //
@@ -178,26 +195,24 @@ fn main() {
     let module = Module::from_bc(&expected_path);
     println!("loaded module in {:?}", time.elapsed());
 
-    let panic_fns = find_panic_fns(&module);
-    print_panic_fns(&panic_fns);
-
     let data = &mut Data {
         files: HashMap::new(),
+        fns: HashMap::new(),
         no_of_panicky_fns: 0,
-        panic_fns,
+        in_processing: HashSet::new(),
     };
     let mut fns = module.fns();
     while let Some(fun) = fns.next() {
-        do_fn(data, fun);
+        fn_is_panicky(data, fun);
     }
-
-    // for i in data.files.keys() {
-    //     println!("{}", i);
-    // }
 
     let output_folder = "target/panicatorul";
     fs::create_dir_all(output_folder).unwrap();
     html_gen::gen(output_folder, &data.files);
+
+    for (fun, panic) in &data.fns {
+        println!("{}: {}", fun.name(), panic);
+    }
 
     println!("no of files: {}", data.files.len());
     println!("no of panicky fns: {}", data.no_of_panicky_fns);

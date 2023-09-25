@@ -298,8 +298,6 @@ impl<'x> Value<'x> {
         unsafe {
             let raw_value = self.value_raw();
 
-            // ---
-
             let metadata = LLVMGetMetadata(raw_value, 0);
             if metadata.is_null() {
                 return None;

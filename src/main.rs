@@ -186,7 +186,7 @@ fn main() {
         do_init(&args);
     }
 
-    let expected_path = format!("target/release/deps/{}.bc", args.package);
+    let expected_path = format!("target/{}/{}/deps/{}.bc", args.target, args.profile, args.package);
     if !Path::new(&expected_path).exists() {
         panic!("{} does not exist", expected_path);
     }
@@ -209,10 +209,6 @@ fn main() {
     let output_folder = "target/panicatorul";
     fs::create_dir_all(output_folder).unwrap();
     html_gen::gen(output_folder, &data.files);
-
-    for (fun, panic) in &data.fns {
-        println!("{}: {}", fun.name(), panic);
-    }
 
     println!("no of files: {}", data.files.len());
     println!("no of panicky fns: {}", data.no_of_panicky_fns);

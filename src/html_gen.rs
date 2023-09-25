@@ -8,10 +8,6 @@ use std::{
 };
 
 fn gen_line(writer: &mut String, index: usize, line: &str, status: LineStatus) {
-    if status == LineStatus::Panic {
-        dbg!(index);
-        dbg!(line);
-    }
     let background = match status {
         LineStatus::NotInBinary => "has-background-light",
         LineStatus::NoPanic => "has-background-success-light",
@@ -111,7 +107,7 @@ pub(super) fn gen(output_folder: &str, files: &HashMap<&str, DataFile>) {
     let mut tmp_data = String::with_capacity(4096);
 
     for (name, data) in files {
-        if !name.starts_with("src\\main") {
+        if !name.ends_with("src\\main.rs") {
             continue;
         }
 
